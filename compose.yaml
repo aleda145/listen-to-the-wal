@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wal
+      POSTGRES_USER: wal
+      POSTGRES_PASSWORD: local-wal-password
+    command: [postgres, -c, wal_level=logical, -c, max_replication_slots=4]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U wal -d wal]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  app:
+    build: .
+    ports:
+      - "${PORT:-18080}:8080"
+    environment:
+      DATABASE_URL: postgres://wal:local-wal-password@postgres:5432/wal?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres-data:
