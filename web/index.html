@@ -1,15 +1,19 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#121513"><title>Listen to the WAL</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Listen to the WAL</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
 <body>
-<header><a class="brand" href="/">◉ &nbsp; LISTEN TO THE WAL</a><span class="connection"><i id="light"></i><span id="status">CONNECTING</span></span></header>
-<main>
-<section class="intro"><p class="eyebrow">POSTGRES, WITH THE VOLUME UP</p><h1>A database.<br>A very good <em>rhythm.</em></h1><p class="description">One Postgres. Everyone’s messages. Every committed change becomes a sound. You’re listening to the write-ahead log.</p><div class="intro-bottom"><span class="tagline">If you heard it, Postgres committed it.</span><button id="sound" class="quiet" disabled>Sound off</button></div></section>
-<section class="stage" aria-label="Live database event stream"><div class="stage-top"><span><span class="live-dot"></span> THE LIVE WAL</span><span id="count">0 CHANGES HEARD</span></div><div class="lane-labels" aria-hidden="true"><span>INSERT <b>+</b></span><span>UPDATE <b>↻</b></span><span>DELETE <b>−</b></span></div><div id="stream" aria-hidden="true"><div class="lane"></div><div class="lane"></div><div class="lane"></div></div><div class="stage-bottom"><span>← COMMITTED CHANGES PASS THROUGH. NOTHING STAYS HERE.</span><span id="lsn">AWAITING WAL</span></div></section>
-<section class="controls"><div><p class="eyebrow">LEAVE YOUR MARK</p><h2>Become part of the rhythm.</h2><p>Send a message into the shared database, or delete the oldest one.</p></div><div class="actions"><button id="insert" disabled>+ Insert a message</button><button id="delete" class="quiet" disabled>− Delete oldest</button></div></section>
-<form id="composer" hidden><label for="message">Your message to everyone listening</label><div><input id="message" maxlength="160" autocomplete="off" placeholder="Something worth committing…" required><button type="submit">Commit →</button></div><small>Public, live, and fleeting. 160 characters max.</small></form>
-<p id="notice" role="status" aria-live="polite"></p><p id="accessible-event" class="sr-only" aria-live="polite"></p>
-<footer><span>MADE OF ROWS, WIRES & SOUND WAVES.</span><span>INSERT → COMMIT → WAL → YOU</span></footer>
-</main>
-<dialog id="tutorial" aria-labelledby="tutorial-title"><div class="tutorial-inner"><p class="eyebrow">A 20-SECOND SOUND CHECK</p><h2 id="tutorial-title">Meet the database band.</h2><p>Tap each sound to hear a preview. Then join the same live Postgres as everyone else.</p><div class="sound-cards"><button data-preview="insert"><b>+</b><strong>Insert</strong><span>A bright note.<br>A new row arrives.</span></button><button data-preview="update"><b>↻</b><strong>Update</strong><span>A quick ripple.<br>A row changes.</span></button><button data-preview="delete"><b>−</b><strong>Delete</strong><span>A low thud.<br>A row disappears.</span></button></div><p class="fine">Deleting first updates the row with the requester’s identity, then removes it. You’ll hear both. Your own changes wear a <mark>YOU</mark> label.</p><button id="join">Start listening →</button><button id="silent" class="text-button">Join with sound off</button><p class="fine">Preview sounds are demos. In the live stream, every sound comes from a committed WAL change.</p></div></dialog>
-</body></html>
+<main id="stream" aria-label="Live messages"></main>
+<div id="controls">
+<button id="sound" type="button" aria-label="Enable sound" aria-pressed="false" title="Enable sound">♪</button>
+<button id="delete" type="button" aria-label="Delete oldest message" title="Delete oldest message" disabled>−</button>
+<form id="composer"><input id="message" aria-label="Message" maxlength="160" autocomplete="off" required disabled><button id="insert" type="submit" aria-label="Send message" title="Send message" disabled>↵</button></form>
+</div>
+<p id="notice" role="status" hidden></p>
+</body>
+</html>
