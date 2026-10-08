@@ -1,6 +1,5 @@
 const $ = id => document.getElementById(id);
 let socket, actor = '', muted = true, audio, reconnect, noticeTimer, lane = 0;
-const active = new Set();
 let transport = 'reconnecting', latestStats, recentEvents = [], retryDelay = 1500, lastReceived = 0;
 async function enableAudio() {
   audio ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -69,19 +68,13 @@ function show(e) {
   message.append(body, metadata);
   message.style.top = `${15 + (lane++ % 7) * 9}%`;
   $('stream').append(message);
-  active.add(message);
-  if (active.size > 45) {
-    const oldest = active.values().next().value;
-    oldest.getAnimations().forEach(animation => animation.cancel());
-    oldest.remove(); active.delete(oldest);
-  }
   const width = message.getBoundingClientRect().width;
   const distance = $('stream').clientWidth + width + 40;
   const animation = message.animate([
     {transform: `translateX(${$('stream').clientWidth + 20}px)`},
     {transform: `translateX(${-width - 20}px)`}
   ], {duration: distance / 110 * 1000, easing: 'linear'});
-  animation.onfinish = () => { active.delete(message); message.remove(); };
+  animation.onfinish = () => message.remove();
 }
 function connectionStatus() {
   const status = transport === 'connected' ? (latestStats?.status || 'reconnecting') : transport;
