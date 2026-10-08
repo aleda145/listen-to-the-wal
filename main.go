@@ -47,8 +47,13 @@ type client struct {
 }
 
 type activityPoint struct {
-	Timestamp       string  `json:"timestamp"`
-	EventsPerSecond float64 `json:"eventsPerSecond"`
+	Timestamp        string  `json:"timestamp"`
+	EventsPerSecond  float64 `json:"eventsPerSecond"`
+	InsertsPerSecond float64 `json:"insertsPerSecond"`
+	UpdatesPerSecond float64 `json:"updatesPerSecond"`
+	DeletesPerSecond float64 `json:"deletesPerSecond"`
+	ReplicationLag   *int64  `json:"replicationLag"`
+	Connected        bool    `json:"connected"`
 }
 type stats struct {
 	Status          string          `json:"status"`
@@ -58,13 +63,12 @@ type stats struct {
 	LSN             string          `json:"lsn"`
 	Timestamp       string          `json:"timestamp"`
 	Rows            []event         `json:"rows"`
-	Recent          []event         `json:"recent"`
 	Activity        []activityPoint `json:"activity"`
 }
 
 // The same lock orders snapshots, decoded events, and client registration.
-var live = stats{Status: "reconnecting", Recent: make([]event, 0, 50), Activity: make([]activityPoint, 0, 60)}
-var intervalEvents uint64
+var live = stats{Status: "reconnecting", Activity: make([]activityPoint, 0, 60)}
+var intervalEvents, intervalInserts, intervalUpdates, intervalDeletes uint64
 
 var clients = map[*client]bool{}
 var clientsMu sync.Mutex
@@ -160,7 +164,6 @@ func snapshot() event {
 		copyStats.Rows = append(copyStats.Rows, row)
 	}
 	copyStats.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
-	copyStats.Recent = append([]event{}, live.Recent...)
 	copyStats.Activity = append([]activityPoint{}, live.Activity...)
 	return event{Type: "stats", Stats: &copyStats}
 }
@@ -175,10 +178,20 @@ func broadcastStats(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			clientsMu.Lock()
-			live.EventsPerSecond = float64(intervalEvents) / now.Sub(last).Seconds()
-			intervalEvents = 0
+			elapsed := now.Sub(last).Seconds()
+			live.EventsPerSecond = float64(intervalEvents) / elapsed
+			point := activityPoint{
+				Timestamp:        now.UTC().Format(time.RFC3339Nano),
+				EventsPerSecond:  live.EventsPerSecond,
+				InsertsPerSecond: float64(intervalInserts) / elapsed,
+				UpdatesPerSecond: float64(intervalUpdates) / elapsed,
+				DeletesPerSecond: float64(intervalDeletes) / elapsed,
+				ReplicationLag:   live.ReplicationLag,
+				Connected:        live.Status == "connected",
+			}
+			intervalEvents, intervalInserts, intervalUpdates, intervalDeletes = 0, 0, 0, 0
 			last = now
-			// Keep at most 60 samples and discard samples older than one minute.
+			// One minute of shared history for all five ridges.
 			for len(live.Activity) > 0 {
 				at, _ := time.Parse(time.RFC3339Nano, live.Activity[0].Timestamp)
 				if len(live.Activity) < 60 && at.After(now.Add(-time.Minute)) {
@@ -186,7 +199,7 @@ func broadcastStats(ctx context.Context) {
 				}
 				live.Activity = live.Activity[1:]
 			}
-			live.Activity = append(live.Activity, activityPoint{Timestamp: now.UTC().Format(time.RFC3339Nano), EventsPerSecond: live.EventsPerSecond})
+			live.Activity = append(live.Activity, point)
 			broadcast(snapshot())
 			clientsMu.Unlock()
 		}
@@ -274,11 +287,14 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 			}
 			live.TotalEvents++
 			intervalEvents++
-			if len(live.Recent) == 50 {
-				copy(live.Recent, live.Recent[1:])
-				live.Recent = live.Recent[:49]
+			switch e.Type {
+			case "insert":
+				intervalInserts++
+			case "update":
+				intervalUpdates++
+			case "delete":
+				intervalDeletes++
 			}
-			live.Recent = append(live.Recent, e)
 			broadcast(e)
 		}
 		clientsMu.Unlock()

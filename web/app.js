@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 let socket, actor = '', muted = true, audio, reconnect, noticeTimer;
 const noteLanes = {insert: {next: 0, available: []}, update: {next: 0, available: []}, delete: {next: 0, available: []}};
 let currentRows = new Map(), messageOrder = 'top', leaderboardSignature = '';
-let transport = 'reconnecting', latestStats, recentEvents = [], retryDelay = 1500, lastReceived = 0;
+let transport = 'reconnecting', latestStats, retryDelay = 1500, lastReceived = 0;
 async function enableAudio() {
   audio ||= new (window.AudioContext || window.webkitAudioContext)();
   await audio.resume();
@@ -202,27 +202,97 @@ function connectionStatus() {
   $('events-rate').textContent = status === 'connected' && latestStats ? latestStats.eventsPerSecond.toFixed(1) : '—';
   $('replication-lag').textContent = status === 'connected' && latestStats?.replicationLag != null ? latestStats.replicationLag.toLocaleString() : '—';
 }
-function renderRecent() {
-  $('recent-count').textContent = `${recentEvents.length} / 50`;
-  const rows = document.createDocumentFragment();
-  for (const e of [...recentEvents].reverse()) {
-    const row = document.createElement('tr'); row.className = e.type;
-    const characters = Array.from(e.body);
-    const excerpt = characters.length > 10 ? characters.slice(0, 9).join('') + '…' : e.body;
-    const date = new Date(e.timestamp);
-    const timestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-    for (const text of [timestamp, e.type.toUpperCase(), excerpt, e.lsn, e.ip || (e.actor === 'house' ? 'server' : 'unknown')]) {
-      const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+function renderJoyPlot(stats) {
+  const now = Date.parse(stats.timestamp);
+  const start = now - 30000;
+  const samples = stats.activity.filter(point => {
+    const at = Date.parse(point.timestamp);
+    return at > start && at <= now;
+  });
+  const metrics = [
+    ['eventsPerSecond', 'All events', '/ sec'],
+    ['insertsPerSecond', 'Inserts', '/ sec'],
+    ['updatesPerSecond', 'Updates', '/ sec'],
+    ['deletesPerSecond', 'Deletes', '/ sec'],
+    ['replicationLag', 'WAL lag', 'bytes']
+  ];
+  const ridges = document.createDocumentFragment();
+  const labels = document.createDocumentFragment();
+  const descriptions = [];
+  for (const [row, [metric, name, unit]] of metrics.entries()) {
+    const values = samples.map(point => ({
+      at: Date.parse(point.timestamp),
+      value: point.connected ? point[metric] : null
+    }));
+    const known = values.filter(point => point.value != null);
+    const peak = Math.max(0, ...known.map(point => point.value));
+    const scale = Math.max(1, peak);
+    const baseline = 126 + row * 18;
+    const label = document.createElement('div');
+    label.style.top = `${baseline / 250 * 100}%`;
+    const nameLabel = document.createElement('strong');
+    nameLabel.textContent = name;
+    const peakLabel = document.createElement('span');
+    peakLabel.textContent = known.length ? `peak ${peak.toLocaleString(undefined, {maximumFractionDigits: metric === 'replicationLag' ? 0 : 1})} ${unit}` : 'Awaiting data';
+    label.title = `${name}: ${peakLabel.textContent}`;
+    label.append(nameLabel, peakLabel);
+    labels.append(label);
+    descriptions.push(`${name}: ${peakLabel.textContent}`);
+    // All five rows are present immediately; dashed portions mean missing data.
+    const guide = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    guide.setAttribute('d', `M12,${baseline}H588`);
+    guide.setAttribute('stroke', '#555');
+    guide.setAttribute('stroke-dasharray', '2 5');
+    guide.setAttribute('vector-effect', 'non-scaling-stroke');
+    ridges.append(guide);
+    for (let i = 0; i < values.length; i++) {
+      if (values[i].value == null) continue;
+      const first = i;
+      // Plot actual timestamps. Timer jitter must not create empty one-second bins.
+      while (i + 1 < values.length && values[i + 1].value != null && values[i + 1].at - values[i].at < 2500) i++;
+      const last = i;
+      const left = first === 0 ? 12 : 12 + (values[first].at - start) / 30000 * 576;
+      let line = first === 0 ? `M12,${baseline} H${Math.min(69.6, 12 + (values[first].at - start) / 30000 * 576)} ` : '';
+      for (let j = first; j <= last; j++) {
+        const progress = (values[j].at - start) / 30000;
+        const x = 12 + progress * 576;
+        // Flat outer 10%, then a smooth taper into the full-height middle.
+        const edge = Math.max(0, Math.min(1, (Math.min(progress, 1 - progress) - .1) / .15));
+        const envelope = edge * edge * (3 - 2 * edge);
+        const y = baseline - values[j].value / scale * 106 * envelope;
+        line += `${line ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)} `;
+      }
+      // Hold the latest sample only until the next expected tick.
+      const end = Math.min(now, values[last].at + 1000);
+      let right = 12 + (end - start) / 30000 * 576;
+      if (last === values.length - 1) {
+        line += `L${Math.max(530.4, right).toFixed(2)},${baseline} H588 `;
+        right = 588;
+      } else {
+        line += `H${right.toFixed(2)} `;
+      }
+      const fill = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      fill.setAttribute('d', `${line}L${right},${baseline} L${left},${baseline} Z`);
+      fill.setAttribute('fill', '#101010');
+      ridges.append(fill);
+      const stroke = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      stroke.setAttribute('d', line);
+      stroke.setAttribute('fill', 'none');
+      stroke.setAttribute('stroke', '#f7f3e8');
+      stroke.setAttribute('stroke-width', '1.3');
+      stroke.setAttribute('stroke-linejoin', 'round');
+      stroke.setAttribute('vector-effect', 'non-scaling-stroke');
+      ridges.append(stroke);
     }
-    row.firstChild.title = `WAL read at ${e.timestamp}`;
-    row.children[2].title = e.body;
-    row.children[2].setAttribute('aria-label', e.body);
-    row.children[3].title = e.lsn;
-    row.children[4].title = e.ip || (e.actor === 'house' ? 'server' : 'unknown');
-    rows.append(row);
   }
-  $('recent-events').replaceChildren(rows);
+  $('joy-ridges').replaceChildren(ridges);
+  $('joy-labels').replaceChildren(labels);
+  $('joy-chart').setAttribute('aria-label', `All five signals over the same last 30 seconds. Each ridge scaled to its own peak with decorative tapering to zero at both ends. ${descriptions.join('. ')}. Dashed lines indicate missing data.`);
+  const eventPeak = Math.max(1, ...samples.map(point => point.eventsPerSecond));
+  $('rate-dial').style.setProperty('--dial', `${-135 + Math.min(1, stats.eventsPerSecond / eventPeak) * 270}deg`);
 }
+renderJoyPlot({timestamp: new Date().toISOString(), activity: [], eventsPerSecond: 0});
+
 function renderStats(stats) {
   latestStats = stats;
   currentRows = new Map(stats.rows.map(row => [row.id, row]));
@@ -230,21 +300,7 @@ function renderStats(stats) {
   connectionStatus();
   $('total-events').textContent = stats.totalEvents.toLocaleString();
   $('total-dial').style.setProperty('--dial', `${-135 + Math.min(1, Math.log10(1 + stats.totalEvents) / 6) * 270}deg`);
-  recentEvents = stats.recent.slice(-50);
-  renderRecent();
-  const end = Date.parse(stats.timestamp);
-  const points = stats.activity.filter(point => Date.parse(point.timestamp) > end - 60000).slice(-60);
-  const peak = Math.max(0, ...points.map(point => point.eventsPerSecond));
-  const scale = Math.max(1, peak);
-  $('rate-dial').style.setProperty('--dial', `${-135 + Math.min(1, stats.eventsPerSecond / scale) * 270}deg`);
-  const path = points.map((point, index) => {
-    const x = Math.max(0, Math.min(300, (Date.parse(point.timestamp) - end + 60000) / 60000 * 300));
-    const y = 58 - point.eventsPerSecond / scale * 54;
-    return `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  $('activity-line').setAttribute('d', path);
-  $('chart-scale').textContent = `0–${scale.toFixed(1)}`;
-  $('activity-chart').setAttribute('aria-label', `Events per second, last 60 seconds. Peak ${peak.toFixed(1)}.`);
+  renderJoyPlot(stats);
 }
 function connect() {
   clearTimeout(reconnect);
@@ -267,8 +323,6 @@ function connect() {
         currentRows.set(e.id, e);
       }
       renderLeaderboard();
-      recentEvents.push(e); if (recentEvents.length > 50) recentEvents.shift();
-      renderRecent();
       show(e);
     }
   };
