@@ -178,6 +178,7 @@ func broadcastStats(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			clientsMu.Lock()
+			now = time.Now()
 			elapsed := now.Sub(last).Seconds()
 			live.EventsPerSecond = float64(intervalEvents) / elapsed
 			point := activityPoint{
@@ -191,7 +192,7 @@ func broadcastStats(ctx context.Context) {
 			}
 			intervalEvents, intervalInserts, intervalUpdates, intervalDeletes = 0, 0, 0, 0
 			last = now
-			// Thirty seconds of 500 ms samples for all five ridges.
+			// Thirty seconds of fixed 500 ms samples.
 			for len(live.Activity) > 0 {
 				at, _ := time.Parse(time.RFC3339Nano, live.Activity[0].Timestamp)
 				if len(live.Activity) < 60 && at.After(now.Add(-30*time.Second)) {
@@ -249,6 +250,7 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
+	changed := false
 	for rows.Next() {
 		var lsn, data string
 		if err := rows.Scan(&lsn, &data); err != nil {
@@ -295,6 +297,7 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 			case "delete":
 				intervalDeletes++
 			}
+			changed = true
 			broadcast(e)
 		}
 		clientsMu.Unlock()
@@ -317,6 +320,9 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 	if err == nil {
 		live.LSN = lsn
 		live.ReplicationLag = &lag
+	}
+	if changed {
+		broadcast(snapshot())
 	}
 	clientsMu.Unlock()
 	// A missing lag measurement must not stop the event stream.

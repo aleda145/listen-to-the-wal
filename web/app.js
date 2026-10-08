@@ -224,21 +224,10 @@ function renderJoyPlot(stats) {
       at: Date.parse(point.timestamp),
       value: point.connected ? point[metric] : null
     }));
-    // A light three-sample blend rounds 500 ms spikes without flattening bursts.
-    const smoothed = values.map((point, index) => {
-      if (point.value == null) return null;
-      let sum = point.value * .6, weight = .6;
-      for (const neighbor of [values[index - 1], values[index + 1]]) {
-        if (neighbor?.value != null && Math.abs(neighbor.at - point.at) < 750) {
-          sum += neighbor.value * .2;
-          weight += .2;
-        }
-      }
-      return sum / weight;
-    });
     const known = values.filter(point => point.value != null);
     const peak = Math.max(0, ...known.map(point => point.value));
-    const scale = Math.max(1, peak);
+    // Fixed display ceilings: incoming peaks never resize historical points.
+    const scale = metric === 'replicationLag' ? 65536 : 20;
     const baseline = 126 + row * 18;
     const label = document.createElement('div');
     label.style.top = `${baseline / 250 * 100}%`;
@@ -246,7 +235,7 @@ function renderJoyPlot(stats) {
     nameLabel.textContent = name;
     const peakLabel = document.createElement('span');
     peakLabel.textContent = known.length ? `peak ${peak.toLocaleString(undefined, {maximumFractionDigits: metric === 'replicationLag' ? 0 : 1})} ${unit}` : 'Awaiting data';
-    label.title = `${name}: ${peakLabel.textContent}`;
+    label.title = `${name}: ${peakLabel.textContent}. Fixed display ceiling: ${scale} ${unit}.`;
     label.append(nameLabel, peakLabel);
     labels.append(label);
     descriptions.push(`${name}: ${peakLabel.textContent}`);
@@ -263,30 +252,30 @@ function renderJoyPlot(stats) {
       // Plot actual timestamps. Timer jitter must not create empty one-second bins.
       while (i + 1 < values.length && values[i + 1].value != null && values[i + 1].at - values[i].at < 1250) i++;
       const last = i;
-      const left = first === 0 ? 12 : 12 + (values[first].at - start) / 30000 * 576;
-      let line = first === 0 ? `M12,${baseline} H${Math.min(69.6, 12 + (values[first].at - start) / 30000 * 576)} ` : '';
+      const left = first === 0 ? 12 : 84 + (values[first].at - start) / 30000 * 432;
+      let line = '';
       const points = [];
       for (let j = first; j <= last; j++) {
         const progress = (values[j].at - start) / 30000;
-        const x = 12 + progress * 576;
-        // Flat outer 10%, then a smooth taper into the full-height middle.
-        const edge = Math.max(0, Math.min(1, (Math.min(progress, 1 - progress) - .1) / .15));
-        const envelope = edge * edge * (3 - 2 * edge);
-        const y = baseline - smoothed[j] / scale * 106 * envelope;
+        // Reserve flat margins outside the data instead of hiding new activity.
+        const x = 84 + progress * 432;
+        const y = baseline - Math.min(values[j].value / scale, 1) * 106;
         points.push({x, y});
       }
-      line += `${line ? 'L' : 'M'}${points[0].x.toFixed(2)},${points[0].y.toFixed(2)} `;
-      for (let j = 0; j < points.length - 1; j++) {
-        const point = points[j], next = points[j + 1];
-        line += `Q${point.x.toFixed(2)},${point.y.toFixed(2)} ${((point.x + next.x) / 2).toFixed(2)},${((point.y + next.y) / 2).toFixed(2)} `;
+      const firstPoint = points[0];
+      if (first === 0) {
+        line = `M12,${baseline} H${firstPoint.x.toFixed(2)} V${firstPoint.y.toFixed(2)} `;
+      } else {
+        line = `M${firstPoint.x.toFixed(2)},${firstPoint.y.toFixed(2)} `;
       }
-      const finalPoint = points[points.length - 1];
-      line += `L${finalPoint.x.toFixed(2)},${finalPoint.y.toFixed(2)} `;
+      for (let j = 1; j < points.length; j++) {
+        line += `L${points[j].x.toFixed(2)},${points[j].y.toFixed(2)} `;
+      }
       // Hold the latest sample only until the next expected tick.
       const end = Math.min(now, values[last].at + 500);
-      let right = 12 + (end - start) / 30000 * 576;
+      let right = 84 + (end - start) / 30000 * 432;
       if (last === values.length - 1) {
-        line += `L${Math.max(530.4, right).toFixed(2)},${baseline} H588 `;
+        line += `H${right.toFixed(2)} V${baseline} H588 `;
         right = 588;
       } else {
         line += `H${right.toFixed(2)} `;
@@ -300,16 +289,15 @@ function renderJoyPlot(stats) {
       stroke.setAttribute('fill', 'none');
       stroke.setAttribute('stroke', '#f7f3e8');
       stroke.setAttribute('stroke-width', '1.3');
-      stroke.setAttribute('stroke-linejoin', 'round');
+      stroke.setAttribute('stroke-linejoin', 'bevel');
       stroke.setAttribute('vector-effect', 'non-scaling-stroke');
       ridges.append(stroke);
     }
   }
   $('joy-ridges').replaceChildren(ridges);
   $('joy-labels').replaceChildren(labels);
-  $('joy-chart').setAttribute('aria-label', `All five signals over the same last 30 seconds. Each ridge scaled to its own peak with decorative tapering to zero at both ends. ${descriptions.join('. ')}. Dashed lines indicate missing data.`);
-  const eventPeak = Math.max(1, ...samples.map(point => point.eventsPerSecond));
-  $('rate-dial').style.setProperty('--dial', `${-135 + Math.min(1, stats.eventsPerSecond / eventPeak) * 270}deg`);
+  $('joy-chart').setAttribute('aria-label', `All five signals over the same last 30 seconds. Fixed display ceilings of 20 events per second and 65536 lag bytes, with decorative flat margins. ${descriptions.join('. ')}. Dashed lines indicate missing data.`);
+  $('rate-dial').style.setProperty('--dial', `${-135 + Math.min(1, stats.eventsPerSecond / 20) * 270}deg`);
 }
 renderJoyPlot({timestamp: new Date().toISOString(), activity: [], eventsPerSecond: 0});
 
