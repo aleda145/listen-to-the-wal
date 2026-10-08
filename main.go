@@ -169,7 +169,7 @@ func snapshot() event {
 }
 
 func broadcastStats(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	last := time.Now()
 	for {
@@ -191,10 +191,10 @@ func broadcastStats(ctx context.Context) {
 			}
 			intervalEvents, intervalInserts, intervalUpdates, intervalDeletes = 0, 0, 0, 0
 			last = now
-			// One minute of shared history for all five ridges.
+			// Thirty seconds of 500 ms samples for all five ridges.
 			for len(live.Activity) > 0 {
 				at, _ := time.Parse(time.RFC3339Nano, live.Activity[0].Timestamp)
-				if len(live.Activity) < 60 && at.After(now.Add(-time.Minute)) {
+				if len(live.Activity) < 60 && at.After(now.Add(-30*time.Second)) {
 					break
 				}
 				live.Activity = live.Activity[1:]
@@ -207,7 +207,7 @@ func broadcastStats(ctx context.Context) {
 }
 
 func readWAL(ctx context.Context, db *pgxpool.Pool) {
-	ticker := time.NewTicker(150 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
