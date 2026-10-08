@@ -58,7 +58,15 @@ function show(e) {
   if (!muted) sound(e.type);
   const message = document.createElement('div');
   message.className = `event ${e.type}${e.actor === actor ? ' you' : ''}`;
-  message.textContent = e.body;
+  const body = document.createElement('div');
+  body.textContent = e.body;
+  const metadata = document.createElement('div');
+  metadata.className = 'event-meta';
+  const date = new Date(e.timestamp);
+  const timestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  metadata.textContent = `ID ${e.id} · IP ${e.ip || (e.actor === 'house' ? 'server' : 'unknown')} · ${timestamp}`;
+  metadata.title = `WAL read at ${e.timestamp}`;
+  message.append(body, metadata);
   message.style.top = `${15 + (lane++ % 7) * 9}%`;
   $('stream').append(message);
   active.add(message);
@@ -97,13 +105,16 @@ function renderRecent() {
     const row = document.createElement('tr'); row.className = e.type;
     const characters = Array.from(e.body);
     const excerpt = characters.length > 20 ? characters.slice(0, 19).join('') + '…' : e.body;
-    for (const text of [new Date(e.timestamp).toLocaleTimeString([], {hour12: false}), e.type.toUpperCase(), excerpt, e.lsn]) {
+    const date = new Date(e.timestamp);
+    const timestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    for (const text of [timestamp, e.type.toUpperCase(), excerpt, e.lsn, e.ip || (e.actor === 'house' ? 'server' : 'unknown')]) {
       const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
     }
-    row.firstChild.title = e.timestamp;
+    row.firstChild.title = `WAL read at ${e.timestamp}`;
     row.children[2].title = e.body;
     row.children[2].setAttribute('aria-label', e.body);
     row.children[3].title = e.lsn;
+    row.children[4].title = e.ip || (e.actor === 'house' ? 'server' : 'unknown');
     rows.append(row);
   }
   $('recent-events').replaceChildren(rows);

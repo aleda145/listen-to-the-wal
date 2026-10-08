@@ -3,6 +3,7 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden}
 body{background:#171915 url('/background.jpg') left top repeat;color:#fff;font-family:Arial,Helvetica,sans-serif}
 #stream{position:fixed;inset:0 0 25% 0;overflow:hidden;pointer-events:none}
 .event{position:absolute;left:0;white-space:nowrap;font-size:26px;line-height:1.4;padding:10px 16px;background:#171915f2;border:1px solid #ffffff50;border-radius:4px;box-shadow:0 3px 12px #0005;will-change:transform}
+.event-meta{font:12px/1.4 "Courier New",monospace;opacity:.8;margin-top:3px}
 .event.insert{color:#e6ffc1}
 .event.update{color:#d9ceff}
 .event.delete{color:#ffd1ac}
@@ -44,10 +45,11 @@ input{width:100%;min-width:0;background:#171915f2;border:1px solid #ffffff80;bor
 #recent-count{float:right;letter-spacing:0;color:#c0c6ac}
 .recent-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;border:2px solid;border-color:#121b10 #747c64 #747c64 #121b10;border-radius:8px;background:#07150d;box-shadow:inset 0 0 18px #000;scrollbar-color:#526747 #101c11;scrollbar-width:thin}
 #recent::after{content:"";position:absolute;inset:24px 10px 10px;pointer-events:none;border-radius:7px;background:repeating-linear-gradient(0deg,#0002 0px,#0002 1px,transparent 1px,transparent 3px);box-shadow:inset 0 0 18px #0005}
-#recent table{width:100%;border-collapse:collapse;table-layout:fixed;color:#a2ef98;text-shadow:0 0 3px #78ff6050}
+#recent table{width:100%;min-width:530px;border-collapse:collapse;table-layout:fixed;color:#a2ef98;text-shadow:0 0 3px #78ff6050}
 #recent th,#recent td{padding:4px 3px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid #30503155}
 #recent th{position:sticky;top:0;z-index:1;background:#102316;color:#7da97b;font-weight:normal;text-transform:uppercase}
-#recent th:nth-child(1){width:58px}#recent th:nth-child(2){width:48px}#recent th:nth-child(3){width:132px}#recent th:nth-child(4){width:80px}
+#recent th:nth-child(1){width:120px}#recent th:nth-child(2){width:48px}#recent th:nth-child(3){width:132px}#recent th:nth-child(4){width:80px}
+#recent th:nth-child(5){width:150px}
 #recent tr.update{color:#b7cba0}#recent tr.delete{color:#e5bd7c}
 
 #controls button{background:#62685a;border:3px outset #979d87;border-radius:2px;color:#11180e;text-shadow:1px 1px #b4bba0;font:bold 22px "Courier New",monospace;width:36px;box-shadow:2px 2px #1118}

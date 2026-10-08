@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,6 +32,7 @@ type event struct {
 	Type      string `json:"type"`
 	ID        int64  `json:"id,omitempty"`
 	Actor     string `json:"actor,omitempty"`
+	IP        string `json:"ip,omitempty"`
 	Body      string `json:"body,omitempty"`
 	LSN       string `json:"lsn,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -63,7 +65,7 @@ var intervalEvents uint64
 
 var clients = map[*client]bool{}
 var clientsMu sync.Mutex
-var changes = regexp.MustCompile(`(?s)^table public\.messages: (INSERT|UPDATE|DELETE): (?:old-key: id\[bigint\]:\d+ actor\[text\]:'(?:[^']|'')*' body\[text\]:'(?:[^']|'')*' new-tuple: )?id\[bigint\]:(\d+) actor\[text\]:'((?:[^']|'')*)' body\[text\]:'((?:[^']|'')*)'$`)
+var changes = regexp.MustCompile(`(?s)^table public\.messages: (INSERT|UPDATE|DELETE): (?:old-key: id\[bigint\]:\d+ actor\[text\]:'(?:[^']|'')*' body\[text\]:'(?:[^']|'')*' ip\[text\]:'(?:[^']|'')*' new-tuple: )?id\[bigint\]:(\d+) actor\[text\]:'((?:[^']|'')*)' body\[text\]:'((?:[^']|'')*)' ip\[text\]:'((?:[^']|'')*)'$`)
 
 // Caller holds clientsMu. A slow browser reconnects for a fresh snapshot.
 func broadcast(e event) {
@@ -84,7 +86,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, actor text NOT NULL, body text NOT NULL); ALTER TABLE messages REPLICA IDENTITY FULL;`)
+	_, err = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, actor text NOT NULL, body text NOT NULL); ALTER TABLE messages ADD COLUMN IF NOT EXISTS ip text NOT NULL DEFAULT ''; ALTER TABLE messages REPLICA IDENTITY FULL;`)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -219,7 +221,7 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 		if m != nil {
 			var id int64
 			fmt.Sscan(m[2], &id)
-			e := event{Type: strings.ToLower(m[1]), ID: id, Actor: strings.ReplaceAll(m[3], "''", "'"), Body: strings.ReplaceAll(m[4], "''", "'"), LSN: lsn, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+			e := event{Type: strings.ToLower(m[1]), ID: id, Actor: strings.ReplaceAll(m[3], "''", "'"), Body: strings.ReplaceAll(m[4], "''", "'"), IP: strings.ReplaceAll(m[5], "''", "'"), LSN: lsn, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
 			live.TotalEvents++
 			intervalEvents++
 			if len(live.Recent) == 50 {
@@ -256,6 +258,12 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 }
 
 func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
+	// Use the socket peer; forwarded headers need a trusted proxy configuration.
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		http.Error(w, "No client IP available", http.StatusBadRequest)
+		return
+	}
 	// The cookie survives reconnects; clients cannot choose an actor in a command.
 	actor := ""
 	if cookie, err := r.Cookie("wal_listener"); err == nil {
@@ -331,10 +339,10 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 				if body == "" || !utf8.ValidString(body) || utf8.RuneCountInString(body) > 160 || strings.ContainsRune(body, 0) {
 					err = errors.New("Write between 1 and 160 characters.")
 				} else {
-					_, err = db.Exec(queryCtx, `INSERT INTO messages(actor,body) VALUES($1,$2)`, actor, body)
+					_, err = db.Exec(queryCtx, `INSERT INTO messages(actor,body,ip) VALUES($1,$2,$3)`, actor, body, ip)
 				}
 			case "delete":
-				err = deleteMessage(queryCtx, db, actor)
+				err = deleteMessage(queryCtx, db, actor, ip)
 			default:
 				err = errors.New("Unknown action.")
 			}
@@ -354,7 +362,7 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 	}
 }
 
-func deleteMessage(ctx context.Context, db *pgxpool.Pool, actor string) error {
+func deleteMessage(ctx context.Context, db *pgxpool.Pool, actor, ip string) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
@@ -368,7 +376,7 @@ func deleteMessage(ctx context.Context, db *pgxpool.Pool, actor string) error {
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE messages SET actor=$1 WHERE id=$2`, actor, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE messages SET actor=$1, ip=$2 WHERE id=$3`, actor, ip, id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM messages WHERE id=$1`, id); err != nil {
@@ -389,7 +397,7 @@ func background(ctx context.Context, db *pgxpool.Pool) {
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if i%3 == 2 {
-			if err := deleteMessage(queryCtx, db, "house"); err != nil && !strings.HasPrefix(err.Error(), "There") {
+			if err := deleteMessage(queryCtx, db, "house", ""); err != nil && !strings.HasPrefix(err.Error(), "There") {
 				log.Printf("house delete: %v", err)
 			}
 		} else {
@@ -401,7 +409,7 @@ func background(ctx context.Context, db *pgxpool.Pool) {
 		var count int
 		if err := db.QueryRow(queryCtx, `SELECT count(*) FROM messages`).Scan(&count); err == nil {
 			for n := 200; n < count; n++ {
-				if err := deleteMessage(queryCtx, db, "house"); err != nil {
+				if err := deleteMessage(queryCtx, db, "house", ""); err != nil {
 					break
 				}
 			}
