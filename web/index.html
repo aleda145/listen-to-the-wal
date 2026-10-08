@@ -13,14 +13,14 @@
 <section id="metrics" aria-label="PostgreSQL replication metrics">
 <div id="stats-summary">
 <dl>
-<div><dt>Connection</dt><dd id="connection-status" role="status">reconnecting</dd></div>
-<div><dt>Events/sec</dt><dd id="events-rate">—</dd></div>
-<div><dt>Lag (bytes)</dt><dd id="replication-lag">—</dd></div>
-<div><dt>Total events</dt><dd id="total-events">—</dd></div>
+<div class="connection-readout"><dt>● WAL LINK</dt><dd id="connection-status" role="status">reconnecting</dd></div>
+<div class="gauge"><dt>Events/sec</dt><dd><span id="rate-dial" class="dial" aria-hidden="true"></span><span id="events-rate">—</span></dd></div>
+<div class="gauge"><dt>Lag / bytes</dt><dd><span id="lag-dial" class="dial" aria-hidden="true" title="Logarithmic scale: 0 to 1 GB"></span><span id="replication-lag">—</span></dd></div>
+<div class="gauge"><dt>Total events</dt><dd><span id="total-dial" class="dial" aria-hidden="true" title="Logarithmic scale: 0 to 1 million events"></span><span id="total-events">—</span></dd></div>
 </dl>
-<figure><figcaption>Events/sec · last 60s <span id="chart-scale"></span></figcaption><svg id="activity-chart" viewBox="0 0 300 60" width="300" height="60" role="img" aria-label="Events per second over the last 60 seconds"><path id="activity-line" fill="none" stroke="#e6ffc1" stroke-width="2"/></svg></figure>
+<figure><figcaption>OSC / EVENTS·SEC / 60s <span id="chart-scale"></span></figcaption><svg id="activity-chart" viewBox="0 0 300 60" width="300" height="60" role="img" aria-label="Events per second over the last 60 seconds"><defs><pattern id="scope-grid" width="30" height="15" patternUnits="userSpaceOnUse"><path d="M30 0H0V15" fill="none" stroke="#356436" stroke-width=".5"/></pattern></defs><rect width="300" height="60" fill="url(#scope-grid)"/><path id="activity-line" fill="none" stroke="#a8ff75" stroke-width="1.5"/></svg></figure>
 </div>
-<section id="recent" aria-labelledby="recent-title"><h2 id="recent-title">Recent events <span id="recent-count">0 / 50</span></h2><div class="recent-scroll" tabindex="0" aria-label="Recent events history"><table><thead><tr><th>Time</th><th>Operation</th><th>Message</th><th>LSN</th></tr></thead><tbody id="recent-events"></tbody></table></div></section>
+<section id="recent" aria-labelledby="recent-title"><h2 id="recent-title">WAL-VISION <span id="recent-count">0 / 50</span></h2><div class="recent-scroll" tabindex="0" aria-label="Recent events history"><table><thead><tr><th>Time</th><th>Op</th><th>Message</th><th>LSN</th></tr></thead><tbody id="recent-events"></tbody></table></div></section>
 </section>
 <section id="interaction" aria-label="Message controls">
 <div id="controls">

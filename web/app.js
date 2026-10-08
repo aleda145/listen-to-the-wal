@@ -85,6 +85,8 @@ function connectionStatus() {
   $('connection-status').dataset.status = status;
   $('connection-status').title = `WebSocket: ${transport}; WAL: ${latestStats?.status || 'unavailable'}`;
   $('metrics').classList.toggle('stale', status !== 'connected');
+  const lag = latestStats?.replicationLag;
+  $('lag-dial').style.setProperty('--dial', `${-135 + Math.min(1, Math.log10(1 + Math.max(0, lag || 0)) / 9) * 270}deg`);
   $('events-rate').textContent = status === 'connected' && latestStats ? latestStats.eventsPerSecond.toFixed(1) : '—';
   $('replication-lag').textContent = status === 'connected' && latestStats?.replicationLag != null ? latestStats.replicationLag.toLocaleString() : '—';
 }
@@ -93,10 +95,15 @@ function renderRecent() {
   const rows = document.createDocumentFragment();
   for (const e of [...recentEvents].reverse()) {
     const row = document.createElement('tr'); row.className = e.type;
-    for (const text of [new Date(e.timestamp).toLocaleTimeString(), e.type.toUpperCase(), e.body, e.lsn]) {
+    const characters = Array.from(e.body);
+    const excerpt = characters.length > 20 ? characters.slice(0, 19).join('') + '…' : e.body;
+    for (const text of [new Date(e.timestamp).toLocaleTimeString([], {hour12: false}), e.type.toUpperCase(), excerpt, e.lsn]) {
       const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
     }
     row.firstChild.title = e.timestamp;
+    row.children[2].title = e.body;
+    row.children[2].setAttribute('aria-label', e.body);
+    row.children[3].title = e.lsn;
     rows.append(row);
   }
   $('recent-events').replaceChildren(rows);
@@ -105,12 +112,14 @@ function renderStats(stats) {
   latestStats = stats;
   connectionStatus();
   $('total-events').textContent = stats.totalEvents.toLocaleString();
+  $('total-dial').style.setProperty('--dial', `${-135 + Math.min(1, Math.log10(1 + stats.totalEvents) / 6) * 270}deg`);
   recentEvents = stats.recent.slice(-50);
   renderRecent();
   const end = Date.parse(stats.timestamp);
   const points = stats.activity.filter(point => Date.parse(point.timestamp) > end - 60000).slice(-60);
   const peak = Math.max(0, ...points.map(point => point.eventsPerSecond));
   const scale = Math.max(1, peak);
+  $('rate-dial').style.setProperty('--dial', `${-135 + Math.min(1, stats.eventsPerSecond / scale) * 270}deg`);
   const path = points.map((point, index) => {
     const x = Math.max(0, Math.min(300, (Date.parse(point.timestamp) - end + 60000) / 60000 * 300));
     const y = 58 - point.eventsPerSecond / scale * 54;
