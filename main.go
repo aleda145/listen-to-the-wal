@@ -328,8 +328,8 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 			return
 		}
 		var err error
-		if time.Since(last) < 700*time.Millisecond {
-			err = errors.New("Give Postgres a beat. Try again in a second.")
+		if time.Since(last) < 10*time.Millisecond {
+			err = errors.New("Are you trying to ddos the wal? stop!")
 		} else {
 			last = time.Now()
 			queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
