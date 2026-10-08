@@ -11,14 +11,16 @@
 <main id="stream" aria-label="Live messages"></main>
 <footer id="dashboard">
 <section id="metrics" aria-label="PostgreSQL replication metrics">
+<div id="stats-summary">
 <dl>
 <div><dt>Connection</dt><dd id="connection-status" role="status">reconnecting</dd></div>
 <div><dt>Events/sec</dt><dd id="events-rate">—</dd></div>
 <div><dt>Lag (bytes)</dt><dd id="replication-lag">—</dd></div>
 <div><dt>Total events</dt><dd id="total-events">—</dd></div>
-<div><dt>LSN</dt><dd id="latest-lsn">—</dd></div>
 </dl>
 <figure><figcaption>Events/sec · last 60s <span id="chart-scale"></span></figcaption><svg id="activity-chart" viewBox="0 0 300 60" width="300" height="60" role="img" aria-label="Events per second over the last 60 seconds"><path id="activity-line" fill="none" stroke="#e6ffc1" stroke-width="2"/></svg></figure>
+</div>
+<section id="recent" aria-labelledby="recent-title"><h2 id="recent-title">Recent events <span id="recent-count">0 / 50</span></h2><div class="recent-scroll" tabindex="0" aria-label="Recent events history"><table><thead><tr><th>Time</th><th>Operation</th><th>Message</th><th>LSN</th></tr></thead><tbody id="recent-events"></tbody></table></div></section>
 </section>
 <section id="interaction" aria-label="Message controls">
 <div id="controls">
@@ -27,7 +29,7 @@
 <form id="composer"><input id="message" aria-label="Message" maxlength="160" autocomplete="off" required disabled><button id="insert" type="submit" aria-label="Send message" title="Send message" disabled>↵</button></form>
 </div>
 <p id="notice" role="status" hidden></p>
-<details id="recent"><summary>Recent events <span id="recent-count">0 / 50</span></summary><div class="recent-scroll"><table><thead><tr><th>Time</th><th>Operation</th><th>Message</th><th>LSN</th></tr></thead><tbody id="recent-events"></tbody></table></div></details>
+
 </section>
 </footer>
 </body>

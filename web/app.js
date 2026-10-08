@@ -90,7 +90,6 @@ function connectionStatus() {
 }
 function renderRecent() {
   $('recent-count').textContent = `${recentEvents.length} / 50`;
-  if (!$('recent').open) return;
   const rows = document.createDocumentFragment();
   for (const e of [...recentEvents].reverse()) {
     const row = document.createElement('tr'); row.className = e.type;
@@ -102,12 +101,10 @@ function renderRecent() {
   }
   $('recent-events').replaceChildren(rows);
 }
-$('recent').addEventListener('toggle', renderRecent);
 function renderStats(stats) {
   latestStats = stats;
   connectionStatus();
   $('total-events').textContent = stats.totalEvents.toLocaleString();
-  $('latest-lsn').textContent = stats.lsn || '—';
   recentEvents = stats.recent.slice(-50);
   renderRecent();
   const end = Date.parse(stats.timestamp);
