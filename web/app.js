@@ -1,5 +1,7 @@
 const $ = id => document.getElementById(id);
-let socket, actor = '', muted = true, audio, reconnect, noticeTimer, lane = 0;
+let socket, actor = '', muted = true, audio, reconnect, noticeTimer;
+const noteLanes = {insert: {next: 0, available: []}, update: {next: 0, available: []}, delete: {next: 0, available: []}};
+let currentRows = new Map(), messageOrder = 'top', leaderboardSignature = '';
 let transport = 'reconnecting', latestStats, recentEvents = [], retryDelay = 1500, lastReceived = 0;
 async function enableAudio() {
   audio ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -8,18 +10,32 @@ async function enableAudio() {
 function sound(type) {
   if (!audio || audio.state !== 'running') return;
   const now = audio.currentTime;
-  const notes = type === 'insert' ? [523.25, 783.99] : type === 'update' ? [392, 493.88, 587.33] : [130.81];
-  notes.forEach((frequency, i) => {
+  // INSERT: kick, UPDATE: snare, DELETE: closed hi-hat.
+  if (type === 'insert' || type === 'update') {
     const osc = audio.createOscillator(), gain = audio.createGain();
-    const start = now + i * .065;
-    osc.type = type === 'delete' ? 'triangle' : 'sine';
-    osc.frequency.setValueAtTime(frequency, start);
-    if (type === 'delete') osc.frequency.exponentialRampToValueAtTime(48, start + .3);
-    gain.gain.setValueAtTime(0, start);
-    gain.gain.linearRampToValueAtTime(.09 / notes.length, start + .012);
-    gain.gain.exponentialRampToValueAtTime(.001, start + .4);
-    osc.connect(gain); gain.connect(audio.destination); osc.start(start); osc.stop(start + .42);
-  });
+    const duration = type === 'insert' ? .32 : .12;
+    osc.frequency.setValueAtTime(type === 'insert' ? 150 : 180, now);
+    osc.frequency.exponentialRampToValueAtTime(type === 'insert' ? 42 : 70, now + duration);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(type === 'insert' ? .35 : .14, now + .004);
+    gain.gain.exponentialRampToValueAtTime(.001, now + duration);
+    osc.connect(gain); gain.connect(audio.destination);
+    osc.start(now); osc.stop(now + duration);
+  }
+  if (type === 'update' || type === 'delete') {
+    const duration = type === 'update' ? .18 : .065;
+    const buffer = audio.createBuffer(1, Math.ceil(audio.sampleRate * duration), audio.sampleRate);
+    const samples = buffer.getChannelData(0);
+    for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+    const noise = audio.createBufferSource(), filter = audio.createBiquadFilter(), gain = audio.createGain();
+    noise.buffer = buffer;
+    filter.type = 'highpass';
+    filter.frequency.value = type === 'update' ? 1200 : 7000;
+    gain.gain.setValueAtTime(type === 'update' ? .22 : .15, now);
+    gain.gain.exponentialRampToValueAtTime(.001, now + duration);
+    noise.connect(filter); filter.connect(gain); gain.connect(audio.destination);
+    noise.start(now); noise.stop(now + duration);
+  }
 }
 
 function notice(message) {
@@ -39,7 +55,10 @@ $('sound').onclick = async () => {
 };
 function controls() {
   const ready = socket?.readyState === WebSocket.OPEN && !!actor;
-  $('insert').disabled = $('delete').disabled = $('message').disabled = !ready;
+  $('insert').disabled = $('message').disabled = !ready;
+  for (const button of $('message-list').querySelectorAll('button')) {
+    button.disabled = !ready || !latestStats;
+  }
 }
 function send(command) {
   if (socket?.readyState !== WebSocket.OPEN || !actor) { notice('Reconnecting…'); return false; }
@@ -50,31 +69,127 @@ function send(command) {
 $('composer').onsubmit = e => {
   e.preventDefault();
   const body = $('message').value.trim();
+  if (Array.from(body).length > 10) { notice('Write between 1 and 10 characters.'); return; }
   if (body && send({type: 'insert', body})) { $('message').value = ''; $('message').focus(); }
 };
-$('delete').onclick = () => send({type: 'delete'});
+for (const order of ['top', 'new']) {
+  $(order + '-tab').onclick = () => {
+    messageOrder = order;
+    for (const name of ['top', 'new']) {
+      $(name + '-tab').setAttribute('aria-selected', String(name === order));
+      $(name + '-tab').tabIndex = name === order ? 0 : -1;
+    }
+    $('leaderboard-panel').setAttribute('aria-labelledby', order + '-tab');
+    renderLeaderboard();
+    $('leaderboard-panel').scrollTop = 0;
+  };
+  $(order + '-tab').onkeydown = e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const next = e.key === 'Home' ? 'top' : e.key === 'End' ? 'new' : order === 'top' ? 'new' : 'top';
+    $(next + '-tab').click();
+    $(next + '-tab').focus();
+  };
+}
+function renderLeaderboard() {
+  const rows = [...currentRows.values()].sort((a, b) =>
+    messageOrder === 'top' ? b.score - a.score || b.id - a.id : b.id - a.id);
+  $('message-count').textContent = `${rows.length} live`;
+  $('leaderboard-empty').hidden = rows.length > 0;
+  $('leaderboard-empty').textContent = latestStats ? 'No messages yet. Send the first one.' : 'Connecting…';
+  const signature = JSON.stringify([messageOrder, rows.map(e => [e.id, e.body, e.score, e.ip, e.actor])]);
+  if (signature === leaderboardSignature) { controls(); return; }
+  leaderboardSignature = signature;
+  const focused = document.activeElement;
+  const focusID = focused?.closest('#message-list li')?.dataset.id;
+  const focusAction = focused?.dataset.action;
+  const expanded = new Set([...$('message-list').querySelectorAll('details[open]')].map(el => el.closest('li').dataset.id));
+  const list = document.createDocumentFragment();
+  for (const e of rows) {
+    const row = document.createElement('li');
+    row.dataset.id = e.id;
+    const details = document.createElement('details');
+    details.open = expanded.has(String(e.id));
+    const title = document.createElement('summary');
+    const characters = Array.from(e.body);
+    title.textContent = characters.length > 10 ? characters.slice(0, 9).join('') + '…' : e.body;
+    title.title = e.body;
+    const metadata = document.createElement('p');
+    metadata.className = 'row-meta';
+    metadata.textContent = `ID ${e.id} · IP ${e.ip || (e.actor === 'house' ? 'server' : 'unknown')}`;
+    details.append(title, metadata);
+    const actions = document.createElement('div');
+    actions.className = 'row-actions';
+    const score = document.createElement('span');
+    score.className = 'row-score';
+    score.textContent = `${e.score} points`;
+    actions.append(score);
+    for (const [action, label] of [['upvote', '▲'], ['downvote', '▼'], ['delete', 'Delete']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.dataset.action = action;
+      button.title = `${action === 'upvote' ? 'Upvote' : action === 'downvote' ? 'Downvote' : 'Delete'} message ${e.id}`;
+      button.setAttribute('aria-label', button.title);
+      button.onclick = () => send({type: action, id: e.id});
+      actions.append(button);
+    }
+    row.append(details, actions);
+    list.append(row);
+  }
+  $('message-list').replaceChildren(list);
+  controls();
+  if (focusID) {
+    const row = $('message-list').querySelector(`li[data-id="${focusID}"]`);
+    const target = focusAction ? row?.querySelector(`button[data-action="${focusAction}"]`) : row?.querySelector('summary');
+    (target || $('leaderboard-panel')).focus({preventScroll: true});
+  }
+}
 function show(e) {
-  if (!muted) sound(e.type);
+  const track = $(e.type + '-track');
+  const slots = Math.max(1, Math.floor(track.clientWidth / 130));
+  const lanes = noteLanes[e.type];
+  const slot = lanes.next++ % slots;
+  const now = performance.now();
+  const start = Math.max(now, lanes.available[slot] || 0);
+  const duration = 3200;
+  // Spread bursts across the track, then space overflow vertically. Never drop notes.
+  lanes.available[slot] = start + duration * 58 / Math.max(58, track.clientHeight);
   const message = document.createElement('div');
-  message.className = `event ${e.type}${e.actor === actor ? ' you' : ''}`;
-  const body = document.createElement('div');
-  body.textContent = e.body;
-  const metadata = document.createElement('div');
-  metadata.className = 'event-meta';
-  const date = new Date(e.timestamp);
-  const timestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  metadata.textContent = `ID ${e.id} · IP ${e.ip || (e.actor === 'house' ? 'server' : 'unknown')} · ${timestamp}`;
-  metadata.title = `WAL read at ${e.timestamp}`;
-  message.append(body, metadata);
-  message.style.top = `${15 + (lane++ % 7) * 9}%`;
-  $('stream').append(message);
-  const width = message.getBoundingClientRect().width;
-  const distance = $('stream').clientWidth + width + 40;
+  message.className = `event ${e.type}`;
+  message.style.left = `${(slot + .5) / slots * 100}%`;
+  message.style.width = `calc(${100 / slots}% - 10px)`;
+  message.title = `${e.type.toUpperCase()} · ${e.body}`;
+  const body = document.createElement('span');
+  body.className = 'event-body';
+  const characters = Array.from(e.body);
+  body.textContent = characters.length > 10 ? characters.slice(0, 9).join('') + '…' : e.body;
+  message.setAttribute('aria-label', `${e.type}: ${e.body}`);
+  message.append(body);
+  track.append(message);
   const animation = message.animate([
-    {transform: `translateX(${$('stream').clientWidth + 20}px)`},
-    {transform: `translateX(${-width - 20}px)`}
-  ], {duration: distance / 110 * 1000, easing: 'linear'});
-  animation.onfinish = () => message.remove();
+    {top: '-44px'},
+    {top: 'calc(100% - 44px)'}
+  ], {duration, delay: start - now, easing: 'linear', fill: 'both'});
+  animation.onfinish = () => {
+    // Only the actual landing triggers audio; this note came from a WAL event.
+    if (!muted) sound(e.type);
+    const instrument = $(e.type + '-instrument');
+    instrument.getAnimations().forEach(hit => hit.cancel());
+    instrument.animate([
+      {transform: 'translateY(4px) scaleY(.9)', filter: 'brightness(2.2)'},
+      {transform: 'translateY(0) scaleY(1)', filter: 'brightness(1)'}
+    ], {duration: 200, easing: 'ease-out'});
+    const ripple = document.createElement('span');
+    ripple.className = `hit-ripple ${e.type}`;
+    ripple.style.left = `${(slot + .5) / slots * 100}%`;
+    track.append(ripple);
+    ripple.animate([
+      {transform: 'translate(-50%, 50%) scale(.3)', opacity: 1},
+      {transform: 'translate(-50%, 50%) scale(2)', opacity: 0}
+    ], {duration: 240, fill: 'forwards'}).onfinish = () => ripple.remove();
+    message.remove();
+  };
 }
 function connectionStatus() {
   const status = transport === 'connected' ? (latestStats?.status || 'reconnecting') : transport;
@@ -93,7 +208,7 @@ function renderRecent() {
   for (const e of [...recentEvents].reverse()) {
     const row = document.createElement('tr'); row.className = e.type;
     const characters = Array.from(e.body);
-    const excerpt = characters.length > 20 ? characters.slice(0, 19).join('') + '…' : e.body;
+    const excerpt = characters.length > 10 ? characters.slice(0, 9).join('') + '…' : e.body;
     const date = new Date(e.timestamp);
     const timestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
     for (const text of [timestamp, e.type.toUpperCase(), excerpt, e.lsn, e.ip || (e.actor === 'house' ? 'server' : 'unknown')]) {
@@ -110,6 +225,8 @@ function renderRecent() {
 }
 function renderStats(stats) {
   latestStats = stats;
+  currentRows = new Map(stats.rows.map(row => [row.id, row]));
+  renderLeaderboard();
   connectionStatus();
   $('total-events').textContent = stats.totalEvents.toLocaleString();
   $('total-dial').style.setProperty('--dial', `${-135 + Math.min(1, Math.log10(1 + stats.totalEvents) / 6) * 270}deg`);
@@ -144,6 +261,12 @@ function connect() {
     if (e.type === 'stats') { renderStats(e.stats); return; }
     if (e.type === 'error') { notice(e.error); return; }
     if (['insert', 'update', 'delete'].includes(e.type)) {
+      if (e.type === 'delete') {
+        currentRows.delete(e.id);
+      } else {
+        currentRows.set(e.id, e);
+      }
+      renderLeaderboard();
       recentEvents.push(e); if (recentEvents.length > 50) recentEvents.shift();
       renderRecent();
       show(e);

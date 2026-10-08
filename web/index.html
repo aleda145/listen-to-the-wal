@@ -8,7 +8,26 @@
 <script src="/app.js" defer></script>
 </head>
 <body>
-<main id="stream" aria-label="Live messages"></main>
+<aside id="leaderboard" aria-labelledby="leaderboard-title">
+<header><h1 id="leaderboard-title">THE ROW CHARTS</h1><span id="message-count">0 live</span></header>
+<div class="leaderboard-tabs" role="tablist" aria-label="Message order"><button id="top-tab" type="button" role="tab" aria-selected="true" aria-controls="leaderboard-panel">Top</button><button id="new-tab" type="button" role="tab" aria-selected="false" aria-controls="leaderboard-panel" tabindex="-1">New</button></div>
+<div id="leaderboard-panel" role="tabpanel" aria-labelledby="top-tab" tabindex="0"><p id="leaderboard-empty">Connecting…</p><ol id="message-list"></ol></div>
+</aside>
+<main id="stream" aria-label="Live WAL percussion: messages fall onto instruments">
+<header id="gig-poster"><p class="gig-billing">POSTGRES PRESENTS / LIVE &amp; LOUD</p><h2 aria-label="Another brick in the WAL"><span>Another</span> <span>brick</span> <small>in the</small> <strong>WAL</strong></h2><p class="gig-tagline">If you heard it, Postgres committed it.</p></header>
+<section class="percussion-lane insert" aria-label="INSERT kick drum">
+<div id="insert-track" class="note-track"></div>
+<div class="instrument"><div id="insert-instrument" class="instrument-body kick" aria-hidden="true"><span class="drum-head"></span></div><span class="instrument-label">INSERT <b>KICK</b></span></div>
+</section>
+<section class="percussion-lane update" aria-label="UPDATE snare drum">
+<div id="update-track" class="note-track"></div>
+<div class="instrument"><div id="update-instrument" class="instrument-body snare" aria-hidden="true"><span class="drum-head"></span></div><span class="instrument-label">UPDATE <b>SNARE</b></span></div>
+</section>
+<section class="percussion-lane delete" aria-label="DELETE hi-hat">
+<div id="delete-track" class="note-track"></div>
+<div class="instrument"><div id="delete-instrument" class="instrument-body hi-hat" aria-hidden="true"><span class="cymbal"></span></div><span class="instrument-label">DELETE <b>HI-HAT</b></span></div>
+</section>
+</main>
 <footer id="dashboard">
 <section id="metrics" aria-label="PostgreSQL replication metrics">
 <div id="stats-summary">
@@ -23,10 +42,10 @@
 <section id="recent" aria-labelledby="recent-title"><h2 id="recent-title">WAL-VISION <span id="recent-count">0 / 50</span></h2><div class="recent-scroll" tabindex="0" aria-label="Recent events history"><table><thead><tr><th title="WAL read timestamp">Time</th><th>Op</th><th>Message</th><th>LSN</th><th>IP</th></tr></thead><tbody id="recent-events"></tbody></table></div></section>
 </section>
 <section id="interaction" aria-label="Message controls">
+<p class="composer-label">MAKE SOME <strong>NOISE.</strong></p>
 <div id="controls">
 <button id="sound" type="button" aria-label="Enable sound" aria-pressed="false" title="Enable sound">♪</button>
-<button id="delete" type="button" aria-label="Delete oldest message" title="Delete oldest message" disabled>−</button>
-<form id="composer"><input id="message" aria-label="Message" maxlength="160" autocomplete="off" required disabled><button id="insert" type="submit" aria-label="Send message" title="Send message" disabled>↵</button></form>
+<form id="composer"><input id="message" aria-label="Message" maxlength="10" placeholder="10 chars. Go." autocomplete="off" required disabled><button id="insert" type="submit" aria-label="Send message" title="Send message" disabled>↵</button></form>
 </div>
 <p id="notice" role="status" hidden></p>
 

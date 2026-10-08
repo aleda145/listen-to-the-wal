@@ -34,6 +34,8 @@ type event struct {
 	Actor     string `json:"actor,omitempty"`
 	IP        string `json:"ip,omitempty"`
 	Body      string `json:"body,omitempty"`
+	Score     int64  `json:"score"`
+	Vote      int64  `json:"vote,omitempty"`
 	LSN       string `json:"lsn,omitempty"`
 	Error     string `json:"error,omitempty"`
 	Timestamp string `json:"timestamp,omitempty"`
@@ -55,6 +57,7 @@ type stats struct {
 	TotalEvents     uint64          `json:"totalEvents"`
 	LSN             string          `json:"lsn"`
 	Timestamp       string          `json:"timestamp"`
+	Rows            []event         `json:"rows"`
 	Recent          []event         `json:"recent"`
 	Activity        []activityPoint `json:"activity"`
 }
@@ -65,7 +68,11 @@ var intervalEvents uint64
 
 var clients = map[*client]bool{}
 var clientsMu sync.Mutex
-var changes = regexp.MustCompile(`(?s)^table public\.messages: (INSERT|UPDATE|DELETE): (?:old-key: id\[bigint\]:\d+ actor\[text\]:'(?:[^']|'')*' body\[text\]:'(?:[^']|'')*' ip\[text\]:'(?:[^']|'')*' new-tuple: )?id\[bigint\]:(\d+) actor\[text\]:'((?:[^']|'')*)' body\[text\]:'((?:[^']|'')*)' ip\[text\]:'((?:[^']|'')*)'$`)
+
+// Seeded from PostgreSQL at startup, then maintained only by logical replication.
+var currentRows = map[int64]event{}
+var changes = regexp.MustCompile(`^table public\.messages: (INSERT|UPDATE|DELETE): `)
+var tuple = regexp.MustCompile(`id\[bigint\]:(\d+) actor\[text\]:'((?:[^']|'')*)' body\[text\]:'((?:[^']|'')*)' ip\[text\]:'((?:[^']|'')*)' score\[bigint\]:(-?\d+)`)
 
 // Caller holds clientsMu. A slow browser reconnects for a fresh snapshot.
 func broadcast(e event) {
@@ -86,7 +93,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, actor text NOT NULL, body text NOT NULL); ALTER TABLE messages ADD COLUMN IF NOT EXISTS ip text NOT NULL DEFAULT ''; ALTER TABLE messages REPLICA IDENTITY FULL;`)
+	_, err = db.Exec(ctx, `CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, actor text NOT NULL, body text NOT NULL); ALTER TABLE messages ADD COLUMN IF NOT EXISTS ip text NOT NULL DEFAULT ''; ALTER TABLE messages ADD COLUMN IF NOT EXISTS score bigint NOT NULL DEFAULT 0; ALTER TABLE messages REPLICA IDENTITY FULL;`)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -103,6 +110,22 @@ func main() {
 	if _, err = db.Exec(ctx, `SELECT pg_logical_slot_get_changes('listen_to_the_wal', NULL, NULL)`); err != nil {
 		log.Fatal(err)
 	}
+	// Existing rows establish availability; only new WAL events create floaters.
+	rows, err := db.Query(ctx, `SELECT id, actor, body, ip, score FROM messages`)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for rows.Next() {
+		var row event
+		if err := rows.Scan(&row.ID, &row.Actor, &row.Body, &row.IP, &row.Score); err != nil {
+			log.Fatal(err)
+		}
+		currentRows[row.ID] = row
+	}
+	if err := rows.Err(); err != nil {
+		log.Fatal(err)
+	}
+	rows.Close()
 	go readWAL(ctx, db)
 	go broadcastStats(ctx)
 	go background(ctx, db)
@@ -132,6 +155,10 @@ func main() {
 // Caller holds clientsMu.
 func snapshot() event {
 	copyStats := live
+	copyStats.Rows = make([]event, 0, len(currentRows))
+	for _, row := range currentRows {
+		copyStats.Rows = append(copyStats.Rows, row)
+	}
 	copyStats.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	copyStats.Recent = append([]event{}, live.Recent...)
 	copyStats.Activity = append([]activityPoint{}, live.Activity...)
@@ -219,9 +246,32 @@ func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
 		live.LSN = lsn
 		m := changes.FindStringSubmatch(data)
 		if m != nil {
-			var id int64
-			fmt.Sscan(m[2], &id)
-			e := event{Type: strings.ToLower(m[1]), ID: id, Actor: strings.ReplaceAll(m[3], "''", "'"), Body: strings.ReplaceAll(m[4], "''", "'"), IP: strings.ReplaceAll(m[5], "''", "'"), LSN: lsn, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+			tuples := tuple.FindAllStringSubmatch(data, -1)
+			if len(tuples) == 0 {
+				clientsMu.Unlock()
+				log.Printf("Unrecognized messages WAL tuple: %s", lsn)
+				continue
+			}
+			t := tuples[len(tuples)-1]
+			var id, score int64
+			fmt.Sscan(t[1], &id)
+			fmt.Sscan(t[5], &score)
+			e := event{Type: strings.ToLower(m[1]), ID: id, Actor: strings.ReplaceAll(t[2], "''", "'"), Body: strings.ReplaceAll(t[3], "''", "'"), IP: strings.ReplaceAll(t[4], "''", "'"), Score: score, LSN: lsn, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+			if e.Type == "update" && len(tuples) == 2 {
+				var oldScore int64
+				fmt.Sscan(tuples[0][5], &oldScore)
+				e.Vote = score - oldScore
+				// Deletion first stamps the deleting actor/IP; it is not a vote.
+				if e.Vote == 0 {
+					clientsMu.Unlock()
+					continue
+				}
+			}
+			if e.Type == "delete" {
+				delete(currentRows, id)
+			} else {
+				currentRows[id] = e
+			}
 			live.TotalEvents++
 			intervalEvents++
 			if len(live.Recent) == 50 {
@@ -323,6 +373,7 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 		var command struct {
 			Type string `json:"type"`
 			Body string `json:"body"`
+			ID   int64  `json:"id"`
 		}
 		if err := conn.ReadJSON(&command); err != nil {
 			return
@@ -336,13 +387,23 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 			switch command.Type {
 			case "insert":
 				body := strings.TrimSpace(command.Body)
-				if body == "" || !utf8.ValidString(body) || utf8.RuneCountInString(body) > 160 || strings.ContainsRune(body, 0) {
-					err = errors.New("Write between 1 and 160 characters.")
+				if body == "" || !utf8.ValidString(body) || utf8.RuneCountInString(body) > 10 || strings.ContainsRune(body, 0) {
+					err = errors.New("Write between 1 and 10 characters.")
 				} else {
 					_, err = db.Exec(queryCtx, `INSERT INTO messages(actor,body,ip) VALUES($1,$2,$3)`, actor, body, ip)
 				}
 			case "delete":
-				err = deleteMessage(queryCtx, db, actor, ip)
+				err = deleteMessage(queryCtx, db, actor, ip, command.ID)
+			case "upvote", "downvote":
+				vote := int64(1)
+				if command.Type == "downvote" {
+					vote = -1
+				}
+				result, updateErr := db.Exec(queryCtx, `UPDATE messages SET score=score+$1, actor=$2, ip=$3 WHERE id=$4`, vote, actor, ip, command.ID)
+				err = updateErr
+				if err == nil && result.RowsAffected() == 0 {
+					err = errors.New("There is no message to vote on. It was deleted.")
+				}
 			default:
 				err = errors.New("Unknown action.")
 			}
@@ -362,16 +423,19 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 	}
 }
 
-func deleteMessage(ctx context.Context, db *pgxpool.Pool, actor, ip string) error {
+func deleteMessage(ctx context.Context, db *pgxpool.Pool, actor, ip string, id int64) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var id int64
-	err = tx.QueryRow(ctx, `SELECT id FROM messages ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&id)
+	if id == 0 {
+		err = tx.QueryRow(ctx, `SELECT id FROM messages ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&id)
+	} else {
+		err = tx.QueryRow(ctx, `SELECT id FROM messages WHERE id=$1 FOR UPDATE`, id).Scan(&id)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errors.New("There are no messages to delete yet.")
+		return errors.New("There is no message to delete.")
 	}
 	if err != nil {
 		return err
@@ -386,7 +450,7 @@ func deleteMessage(ctx context.Context, db *pgxpool.Pool, actor, ip string) erro
 }
 
 func background(ctx context.Context, db *pgxpool.Pool) {
-	lines := []string{"A little noise in the database.", "Every commit leaves a rhythm.", "Put another message in the WAL.", "The rows are temporary. The beat goes on.", "Somewhere, a transaction just became a sound.", "We all share the same Postgres."}
+	lines := []string{"WAL beat", "Drop a row", "Commit!", "Row rhythm", "Hear that?", "One more"}
 	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
 	for i := 0; ; i++ {
@@ -397,7 +461,7 @@ func background(ctx context.Context, db *pgxpool.Pool) {
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if i%3 == 2 {
-			if err := deleteMessage(queryCtx, db, "house", ""); err != nil && !strings.HasPrefix(err.Error(), "There") {
+			if err := deleteMessage(queryCtx, db, "house", "", 0); err != nil && !strings.HasPrefix(err.Error(), "There") {
 				log.Printf("house delete: %v", err)
 			}
 		} else {
@@ -409,7 +473,7 @@ func background(ctx context.Context, db *pgxpool.Pool) {
 		var count int
 		if err := db.QueryRow(queryCtx, `SELECT count(*) FROM messages`).Scan(&count); err == nil {
 			for n := 200; n < count; n++ {
-				if err := deleteMessage(queryCtx, db, "house", ""); err != nil {
+				if err := deleteMessage(queryCtx, db, "house", "", 0); err != nil {
 					break
 				}
 			}
