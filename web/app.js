@@ -83,10 +83,6 @@ function show(e) {
   ], {duration: distance / 110 * 1000, easing: 'linear'});
   animation.onfinish = () => { active.delete(message); message.remove(); };
 }
-document.addEventListener('visibilitychange', () => {
-  for (const message of active) { message.getAnimations().forEach(animation => animation.cancel()); message.remove(); }
-  active.clear();
-});
 function connectionStatus() {
   const status = transport === 'connected' ? (latestStats?.status || 'reconnecting') : transport;
   $('connection-status').textContent = status;
@@ -157,7 +153,7 @@ function connect() {
     if (['insert', 'update', 'delete'].includes(e.type)) {
       recentEvents.push(e); if (recentEvents.length > 50) recentEvents.shift();
       renderRecent();
-      if (!document.hidden) show(e);
+      show(e);
     }
   };
   socket.onclose = () => {
