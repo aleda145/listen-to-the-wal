@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 let socket, actor = '', muted = true, audio, reconnect, noticeTimer, lane = 0;
 const active = new Set();
+let transport = 'reconnecting', latestStats, recentEvents = [], retryDelay = 1500, lastReceived = 0;
 async function enableAudio() {
   audio ||= new (window.AudioContext || window.webkitAudioContext)();
   await audio.resume();
@@ -78,16 +79,81 @@ document.addEventListener('visibilitychange', () => {
   for (const message of active) { message.getAnimations().forEach(animation => animation.cancel()); message.remove(); }
   active.clear();
 });
+function connectionStatus() {
+  const status = transport === 'connected' ? (latestStats?.status || 'reconnecting') : transport;
+  $('connection-status').textContent = status;
+  $('connection-status').dataset.status = status;
+  $('connection-status').title = `WebSocket: ${transport}; WAL: ${latestStats?.status || 'unavailable'}`;
+  $('metrics').classList.toggle('stale', status !== 'connected');
+  $('events-rate').textContent = status === 'connected' && latestStats ? latestStats.eventsPerSecond.toFixed(1) : '—';
+  $('replication-lag').textContent = status === 'connected' && latestStats?.replicationLag != null ? latestStats.replicationLag.toLocaleString() : '—';
+}
+function renderRecent() {
+  $('recent-count').textContent = `${recentEvents.length} / 50`;
+  if (!$('recent').open) return;
+  const rows = document.createDocumentFragment();
+  for (const e of [...recentEvents].reverse()) {
+    const row = document.createElement('tr'); row.className = e.type;
+    for (const text of [new Date(e.timestamp).toLocaleTimeString(), e.type.toUpperCase(), e.body, e.lsn]) {
+      const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+    }
+    row.firstChild.title = e.timestamp;
+    rows.append(row);
+  }
+  $('recent-events').replaceChildren(rows);
+}
+$('recent').addEventListener('toggle', renderRecent);
+function renderStats(stats) {
+  latestStats = stats;
+  connectionStatus();
+  $('total-events').textContent = stats.totalEvents.toLocaleString();
+  $('latest-lsn').textContent = stats.lsn || '—';
+  recentEvents = stats.recent.slice(-50);
+  renderRecent();
+  const end = Date.parse(stats.timestamp);
+  const points = stats.activity.filter(point => Date.parse(point.timestamp) > end - 60000).slice(-60);
+  const peak = Math.max(0, ...points.map(point => point.eventsPerSecond));
+  const scale = Math.max(1, peak);
+  const path = points.map((point, index) => {
+    const x = Math.max(0, Math.min(300, (Date.parse(point.timestamp) - end + 60000) / 60000 * 300));
+    const y = 58 - point.eventsPerSecond / scale * 54;
+    return `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  $('activity-line').setAttribute('d', path);
+  $('chart-scale').textContent = `0–${scale.toFixed(1)}`;
+  $('activity-chart').setAttribute('aria-label', `Events per second, last 60 seconds. Peak ${peak.toFixed(1)}.`);
+}
 function connect() {
   clearTimeout(reconnect);
+  transport = 'reconnecting'; connectionStatus();
   socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  lastReceived = Date.now();
   socket.onmessage = message => {
+    lastReceived = Date.now();
     let e; try { e = JSON.parse(message.data); } catch { return; }
-    if (e.type === 'hello') { actor = e.actor; controls(); return; }
+    if (e.type === 'hello') {
+      actor = e.actor; transport = 'connected'; latestStats = null; retryDelay = 1500;
+      connectionStatus(); controls(); return;
+    }
+    if (e.type === 'stats') { renderStats(e.stats); return; }
     if (e.type === 'error') { notice(e.error); return; }
-    if (!document.hidden && ['insert', 'update', 'delete'].includes(e.type)) show(e);
+    if (['insert', 'update', 'delete'].includes(e.type)) {
+      recentEvents.push(e); if (recentEvents.length > 50) recentEvents.shift();
+      renderRecent();
+      if (!document.hidden) show(e);
+    }
   };
-  socket.onclose = () => { actor = ''; controls(); reconnect = setTimeout(connect, 1500); };
+  socket.onclose = () => {
+    actor = ''; transport = 'disconnected'; controls(); connectionStatus();
+    reconnect = setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 15000);
+  };
   socket.onerror = () => socket.close();
 }
+// Detect a half-open connection even when the browser receives no close frame.
+setInterval(() => {
+  if (socket && socket.readyState !== WebSocket.CLOSED && Date.now() - lastReceived > 10000) {
+    transport = 'disconnected'; actor = ''; controls(); connectionStatus(); socket.close();
+  }
+}, 1000);
 connect();

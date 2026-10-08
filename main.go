@@ -28,25 +28,45 @@ import (
 var files embed.FS
 
 type event struct {
-	Type  string `json:"type"`
-	ID    int64  `json:"id,omitempty"`
-	Actor string `json:"actor,omitempty"`
-	Body  string `json:"body,omitempty"`
-	LSN   string `json:"lsn,omitempty"`
-	Error string `json:"error,omitempty"`
+	Type      string `json:"type"`
+	ID        int64  `json:"id,omitempty"`
+	Actor     string `json:"actor,omitempty"`
+	Body      string `json:"body,omitempty"`
+	LSN       string `json:"lsn,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Stats     *stats `json:"stats,omitempty"`
 }
 type client struct {
 	conn *websocket.Conn
 	send chan event
 }
 
+type activityPoint struct {
+	Timestamp       string  `json:"timestamp"`
+	EventsPerSecond float64 `json:"eventsPerSecond"`
+}
+type stats struct {
+	Status          string          `json:"status"`
+	EventsPerSecond float64         `json:"eventsPerSecond"`
+	ReplicationLag  *int64          `json:"replicationLag"`
+	TotalEvents     uint64          `json:"totalEvents"`
+	LSN             string          `json:"lsn"`
+	Timestamp       string          `json:"timestamp"`
+	Recent          []event         `json:"recent"`
+	Activity        []activityPoint `json:"activity"`
+}
+
+// The same lock orders snapshots, decoded events, and client registration.
+var live = stats{Status: "reconnecting", Recent: make([]event, 0, 50), Activity: make([]activityPoint, 0, 60)}
+var intervalEvents uint64
+
 var clients = map[*client]bool{}
 var clientsMu sync.Mutex
 var changes = regexp.MustCompile(`(?s)^table public\.messages: (INSERT|UPDATE|DELETE): (?:old-key: id\[bigint\]:\d+ actor\[text\]:'(?:[^']|'')*' body\[text\]:'(?:[^']|'')*' new-tuple: )?id\[bigint\]:(\d+) actor\[text\]:'((?:[^']|'')*)' body\[text\]:'((?:[^']|'')*)'$`)
 
+// Caller holds clientsMu. A slow browser reconnects for a fresh snapshot.
 func broadcast(e event) {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
 	for c := range clients {
 		select {
 		case c.send <- e:
@@ -81,12 +101,8 @@ func main() {
 	if _, err = db.Exec(ctx, `SELECT pg_logical_slot_get_changes('listen_to_the_wal', NULL, NULL)`); err != nil {
 		log.Fatal(err)
 	}
-	go func() {
-		if err := readWAL(ctx, db); err != nil && ctx.Err() == nil {
-			log.Printf("WAL stopped: %v", err)
-			stop()
-		}
-	}()
+	go readWAL(ctx, db)
+	go broadcastStats(ctx)
 	go background(ctx, db)
 	root, _ := fs.Sub(files, "web")
 	mux := http.NewServeMux()
@@ -110,44 +126,133 @@ func main() {
 	}
 }
 
-func readWAL(ctx context.Context, db *pgxpool.Pool) error {
+// Copy the bounded slices before queuing a snapshot for asynchronous writers.
+// Caller holds clientsMu.
+func snapshot() event {
+	copyStats := live
+	copyStats.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	copyStats.Recent = append([]event{}, live.Recent...)
+	copyStats.Activity = append([]activityPoint{}, live.Activity...)
+	return event{Type: "stats", Stats: &copyStats}
+}
+
+func broadcastStats(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	last := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			clientsMu.Lock()
+			live.EventsPerSecond = float64(intervalEvents) / now.Sub(last).Seconds()
+			intervalEvents = 0
+			last = now
+			// Keep at most 60 samples and discard samples older than one minute.
+			for len(live.Activity) > 0 {
+				at, _ := time.Parse(time.RFC3339Nano, live.Activity[0].Timestamp)
+				if len(live.Activity) < 60 && at.After(now.Add(-time.Minute)) {
+					break
+				}
+				live.Activity = live.Activity[1:]
+			}
+			live.Activity = append(live.Activity, activityPoint{Timestamp: now.UTC().Format(time.RFC3339Nano), EventsPerSecond: live.EventsPerSecond})
+			broadcast(snapshot())
+			clientsMu.Unlock()
+		}
+	}
+}
+
+func readWAL(ctx context.Context, db *pgxpool.Pool) {
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		case <-ticker.C:
 		}
-		rows, err := db.Query(ctx, `SELECT lsn::text, data FROM pg_logical_slot_get_changes('listen_to_the_wal', NULL, 500, 'include-xids', '0', 'skip-empty-xacts', '1')`)
-		if err != nil {
-			return err
+		clientsMu.Lock()
+		if live.Status != "connected" {
+			live.Status = "reconnecting"
 		}
-		var batch []event
-		for rows.Next() {
-			var lsn, data string
-			if err := rows.Scan(&lsn, &data); err != nil {
-				rows.Close()
-				return err
-			}
-			m := changes.FindStringSubmatch(data)
-			if m == nil {
-				continue
-			}
-			var id int64
-			fmt.Sscan(m[2], &id)
-
-			batch = append(batch, event{Type: strings.ToLower(m[1]), ID: id, Actor: strings.ReplaceAll(m[3], "''", "'"), Body: strings.ReplaceAll(m[4], "''", "'"), LSN: lsn})
+		clientsMu.Unlock()
+		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := consumeWAL(queryCtx, db)
+		cancel()
+		if err == nil {
+			continue
 		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
+		if ctx.Err() != nil {
+			return
 		}
-		for _, e := range batch {
-			broadcast(e)
+		log.Printf("WAL disconnected, retrying: %v", err)
+		clientsMu.Lock()
+		live.Status = "disconnected"
+		live.ReplicationLag = nil
+		clientsMu.Unlock()
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 	}
+}
+
+func consumeWAL(ctx context.Context, db *pgxpool.Pool) error {
+	rows, err := db.Query(ctx, `SELECT lsn::text, data FROM pg_logical_slot_get_changes('listen_to_the_wal', NULL, 500, 'include-xids', '0', 'skip-empty-xacts', '1')`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var lsn, data string
+		if err := rows.Scan(&lsn, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		clientsMu.Lock()
+		live.LSN = lsn
+		m := changes.FindStringSubmatch(data)
+		if m != nil {
+			var id int64
+			fmt.Sscan(m[2], &id)
+			e := event{Type: strings.ToLower(m[1]), ID: id, Actor: strings.ReplaceAll(m[3], "''", "'"), Body: strings.ReplaceAll(m[4], "''", "'"), LSN: lsn, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+			live.TotalEvents++
+			intervalEvents++
+			if len(live.Recent) == 50 {
+				copy(live.Recent, live.Recent[1:])
+				live.Recent = live.Recent[:49]
+			}
+			live.Recent = append(live.Recent, e)
+			broadcast(e)
+		}
+		clientsMu.Unlock()
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	// confirmed_flush_lsn is the slot's actual consumed position, including
+	// transaction records and idle progress, not just the last messages row.
+	var lsn string
+	var lag int64
+	err = db.QueryRow(ctx, `SELECT confirmed_flush_lsn::text,
+  GREATEST(0, pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn))::bigint
+  FROM pg_replication_slots WHERE slot_name='listen_to_the_wal'`).Scan(&lsn, &lag)
+	clientsMu.Lock()
+	live.Status = "connected"
+	live.ReplicationLag = nil
+	if err == nil {
+		live.LSN = lsn
+		live.ReplicationLag = &lag
+	}
+	clientsMu.Unlock()
+	// A missing lag measurement must not stop the event stream.
+	return nil
 }
 
 func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
@@ -176,6 +281,7 @@ func serveSocket(ctx context.Context, db *pgxpool.Pool, w http.ResponseWriter, r
 	c := &client{conn: conn, send: make(chan event, 128)}
 	c.send <- event{Type: "hello", Actor: actor}
 	clientsMu.Lock()
+	c.send <- snapshot()
 	clients[c] = true
 	clientsMu.Unlock()
 	done := make(chan struct{})
